@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "brainreg3D"
-dynamic = ["version"
+version = "2024.06.3"
 authors = [
   { name="Joe Ricotta", email="ricotta@psu.edu" },
 ]
@@ -17,7 +17,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "brainrender==2.1.6", 
+    "brainrender==2.1.8", 
     "matplotlib==3.8.4", 
     "numpy==1.23.5", 
     "scikit_learn==1.4.2", 
@@ -36,4 +36,3 @@ include = ["brainreg3D"]
 
 [tool.setuptools.package-data]
 brainreg3D = ["resources/*"]
-"brainreg3D.data" = 
