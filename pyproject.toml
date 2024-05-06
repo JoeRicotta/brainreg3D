@@ -1,17 +1,10 @@
 [build-system]
-requires = [
-    "setuptools>=61.0", 
-    "brainrender==2.1.6", 
-    "matplotlib==3.8.4", 
-    "numpy==1.23.5", 
-    "scikit_learn==1.4.2", 
-    "tifffile==2024.2.12", 
-    "vedo==2024.5.1"]
+requires = ["setuptools>=64", "setuptools_scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "brainreg3D"
-version = "2024.06"
+dynamic = ["version"
 authors = [
   { name="Joe Ricotta", email="ricotta@psu.edu" },
 ]
@@ -23,10 +16,24 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
+dependencies = [
+    "brainrender==2.1.6", 
+    "matplotlib==3.8.4", 
+    "numpy==1.23.5", 
+    "scikit_learn==1.4.2", 
+    "tifffile==2024.2.12", 
+    "vedo==2024.5.1"
+]
+
+[tool.setuptools_scm]
 
 [project.urls]
 Homepage = "https://github.com/JoeRicotta/brainreg3D"
 Issues = "https://github.com/JoeRicotta/brainreg3D/issues"
 
-[tool.setuptools]
-py-modules = ["brainreg3D"]
+[tool.setuptools.packages.find]
+include = ["brainreg3D"]
+
+[tool.setuptools.package-data]
+brainreg3D = ["resources/*"]
+"brainreg3D.data" = 
