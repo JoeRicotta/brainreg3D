@@ -1,6 +1,7 @@
 from collections.abc import Iterable
-from itertools import combinations
+import time
 from pathlib import Path
+import pickle
 
 from brainrender import Scene
 from brainrender.actors import Point
@@ -15,7 +16,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.inspection import DecisionBoundaryDisplay
 
-from tifffile import imread, imwrite, TiffFile
+from tifffile import imread, imwrite
 from vedo import Plane, Image
 
 
@@ -23,7 +24,24 @@ from vedo import Plane, Image
 ######## PARAMETERS ##########
 ##############################
 
-class BrainReg3D(object):
+class _PathHandler(object):
+    
+    @staticmethod
+    def _check_path(path) -> None:
+        """
+        Ensures self.tiff_path is a Path() object.
+        Converts a string to a Path() object if necessary.
+        Raises error if input is neither string nor path.
+        """
+        if isinstance(path, str):
+            return Path(path).resolve()
+        elif isinstance(path, Path):
+            return path.resolve()
+        else:
+            raise(ValueError(f'Variable tiff_path required to be string or pathlib.Path object-- could not recognize {path}'))
+
+
+class BrainReg3D(_PathHandler):
     """
     Main brain registration object.
     """
@@ -42,6 +60,7 @@ class BrainReg3D(object):
     )
     _DEFAULT_ATLAS = DEFAULT_ATLAS # renaming for access with only class import
     _DEFAULT_AUTO_CONTRAST = True # to use for automatically adjusting tiff contrast
+    _DEFAULT_IMG_DIMS_MM = [] # default image dimensions in mm, width * height.
 
 
     def __init__(self, 
@@ -49,13 +68,16 @@ class BrainReg3D(object):
                  brain_regions: list = _DEFAULT_BRAIN_REGIONS, 
                  focal_point: np.ndarray = _DEFAULT_FOCAL_POINT,
                  cam: dict = _DEFAULT_CAM,
+                 image_dims_mm: list[int] = _DEFAULT_IMG_DIMS_MM,
                  _tiff_frame: int = 0,
                  _auto_contrast: bool = _DEFAULT_AUTO_CONTRAST) -> None:
         
-        self.tiff_path = self._check_path(tiff_path).resolve()
+        self.tiff_path = self._check_path(tiff_path)
         self.brain_regions = brain_regions
         self.focal_point = focal_point
         self.cam = cam
+        self.image_dims_mm = image_dims_mm
+        
 
         # initializing parameters
         self.tiff = imread(self.tiff_path, key=_tiff_frame)
@@ -64,26 +86,15 @@ class BrainReg3D(object):
         # look better during manipulation.
         if _auto_contrast:
             self._enhance_tiff_contrast()
+
+        
+        self.registration = None
         
     @staticmethod
-    def _mask_subplot_size(n):
+    def _mask_subplot_size(n) -> tuple:
         if n % 2 == 0:
             return int(n/2), 2
         return int((n+1)/2), 2
-
-    @staticmethod
-    def _check_path(path):
-        """
-        Ensures self.tiff_path is a Path() object.
-        Converts a string to a Path() object if necessary.
-        Raises error if input is neither string nor path.
-        """
-        if isinstance(path, str):
-            return Path(path)
-        elif isinstance(path, Path):
-            return path
-        else:
-            raise(ValueError(f'Variable tiff_path required to be string or pathlib.Path object-- could not recognize {path}'))
 
     def _make_scene(self) -> list[Scene, list]:
         """
@@ -210,7 +221,6 @@ class BrainReg3D(object):
         # reassign the tiff image
         self.tiff = imr
 
-
     @staticmethod
     def make_unit_vector(x) -> list:
         x_ = np.array(x)
@@ -254,7 +264,6 @@ class BrainReg3D(object):
                         ranks[ind_] = ranks[ind_] + j
         return [val[ranks.index(i)] for i in range(len(ranks))]
 
-
     @property
     def tiff_out(self) -> str:
         out_path = self.tiff_path.parent / (self.tiff_path.stem + '_masks.tif')
@@ -271,11 +280,21 @@ class BrainReg3D(object):
         # converting the image to mesh
         img = Image(self.tiff)
         img3D = img.tomesh().clone().cmap("gray").alpha(0.85)
-        img3D = img3D.scale(15).rotate_x(-90).rotate_y(90).pos(self._DEFAULT_BREGMA + np.array([0,-400,0]))
+
+        # identifying scale factor from img3D
+        if self.image_dims_mm:
+            x_scale = self.image_dims_mm[0] * 1000 / np.diff(img3D.xbounds())[0]
+            y_scale = self.image_dims_mm[1] * 1000 / np.diff(img3D.ybounds())[0]
+            scale_factor = [x_scale, y_scale, 1]
+        else:
+            scale_factor = 15
+
+        img3D = img3D.scale(scale_factor).rotate_x(-90).rotate_y(90).pos(self._DEFAULT_BREGMA + np.array([0,-400,0]))
         img3D = img3D.draggable(True)
 
         # adding the image                     
         scene1.add(img3D)
+        scene1.plotter += "Press 'a' to manipulate image.\nshift: translate\nctrl: rotate \nright click: scale"
         pre_coords = scene1.actors[-1].coordinates
 
         # render the scene and interact
@@ -304,6 +323,7 @@ class BrainReg3D(object):
         # get image boundary
         img_boundaries = img_plane.silhouette("2d")
         scene2.add(img_boundaries)
+        scene2.plotter += "Imaged brain volume with planar projection"
 
         # Solving for the rectangular edge norms
         # TODO: clean this up
@@ -442,7 +462,6 @@ class BrainReg3D(object):
         plt.show()
         plt.close()
 
-
         # convert back to coordinates
         ordered_counts = {k : self.sort_lists(v) for k,v in counts.items()}
         recovered = dict()
@@ -557,8 +576,40 @@ class BrainReg3D(object):
                         'Labels' : self.brain_regions})
         
         print(f"Wrote {self.tiff_out}")
+
+        # this image has now been registered
+        self._REGISTERED_DATE = time.ctime()
+        return (RegistrationResult(self)) #TODO: return a registration result and unpack the data so it can be used across platforms.
+
+
+    class RegistrationResult(_PathHandler):
+        """
+        Class to handle storage of results. Saves the objects in a readable format.
+        """
+
+        def __init__(self, 
+                    file_path: Path = Path(),
+                    ext_out: str = '.json',
+                    reg_object: None=None) -> None:
+            
+            self.file_path = self._check_path(file_path)
+            self.ext_out = ext_out
+            self.reg_object = reg_object
+            self._exists = self.file_path.exists()
+            self._is_file = self.file_path.is_file()
+
+        def write_result(self, file_path=None):
+            # Write current directory, tiff directory, 
+            # default values (i.e. reg_object.__dict__), 
+            # tiff values (i.e. tiff.__dict__)
+            pass
+
+        def read_result(self, file_path=None):
+            pass
+            
         
 
 if __name__ == "__main__":
-    reg = BrainReg3D('./resources/sample_image.tif')
+    reg = BrainReg3D('./resources/sample_image.tif', image_dims_mm=[6.25,4])
+    breakpoint()
     reg.run()
