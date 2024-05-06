@@ -1,4 +1,5 @@
 from collections.abc import Iterable
+from itertools import combinations
 from pathlib import Path
 
 from brainrender import Scene
@@ -18,18 +19,16 @@ from tifffile import imread, imwrite, TiffFile
 from vedo import Plane, Image
 
 
-###########################
-##### PARAMETERS ##########
-###########################
+##############################
+######## PARAMETERS ##########
+##############################
 
-
-
-class BrainReg3D():
+class BrainReg3D(object):
     """
-    TODO document register 3D class
+    Main brain registration object.
     """
 
-    # defining defaults
+    # default parameters
     _DEFAULT_BREGMA = np.array([(6333+5066)/2, 440, 5700])
     _DEFAULT_BRAIN_REGIONS = ["MOp", "MOs", "SSp", "SSs", "PTLp", "VIS", "RSP", "ACA", "ORB", "OLF"]
     _DEFAULT_FOCAL_POINT = np.array([0,-23000000,0]) # distance from cranial window center to camera, ~23 cm in my case
@@ -42,6 +41,7 @@ class BrainReg3D():
         clipping_range=(40460.4, 60692.2),
     )
     _DEFAULT_ATLAS = DEFAULT_ATLAS # renaming for access with only class import
+    _DEFAULT_AUTO_CONTRAST = True # to use for automatically adjusting tiff contrast
 
 
     def __init__(self, 
@@ -49,7 +49,8 @@ class BrainReg3D():
                  brain_regions: list = _DEFAULT_BRAIN_REGIONS, 
                  focal_point: np.ndarray = _DEFAULT_FOCAL_POINT,
                  cam: dict = _DEFAULT_CAM,
-                 _tiff_frame = 0) -> None:
+                 _tiff_frame: int = 0,
+                 _auto_contrast: bool = _DEFAULT_AUTO_CONTRAST) -> None:
         
         self.tiff_path = self._check_path(tiff_path).resolve()
         self.brain_regions = brain_regions
@@ -58,7 +59,17 @@ class BrainReg3D():
 
         # initializing parameters
         self.tiff = imread(self.tiff_path, key=_tiff_frame)
+
+        # if auto contrast is selected, address the image to make it
+        # look better during manipulation.
+        if _auto_contrast:
+            self._enhance_tiff_contrast()
         
+    @staticmethod
+    def _mask_subplot_size(n):
+        if n % 2 == 0:
+            return int(n/2), 2
+        return int((n+1)/2), 2
 
     @staticmethod
     def _check_path(path):
@@ -98,6 +109,107 @@ class BrainReg3D():
 
         return scene, region_actors
 
+    def _enhance_tiff_contrast(self) -> None:
+        """
+        Enhances the contrast of the tiff object.
+        """
+        # taken from ImageJ auto enhance algorithm
+        # Python code found here:
+        # https://forum.image.sc/t/macro-for-image-adjust-brightness-contrast-auto-button/37157/3
+
+        # image datatype
+        im_type = self.tiff.dtype
+        # minimum and maximum of image
+        im_min = np.min(self.tiff)
+        im_max = np.max(self.tiff)
+
+        # converting image =================================================================================================
+
+        # case of color image : contrast is computed on image cast to grayscale
+        if len(self.tiff.shape) == 3 and self.tiff.shape[2] == 3:
+            # depending on the options you chose in ImageJ, conversion can be done either in a weighted or unweighted way
+            # go to Edit > Options > Conversion to verify if the "Weighted RGB conversion" box is checked.
+            # if it's not checked, use this line
+            # im = np.mean(im, axis = -1)
+            # instead of the following
+            self.tiff = 0.3 * self.tiff[:,:,2] + 0.59 * self.tiff[:,:,1] + 0.11 * self.tiff[:,:,0]
+            self.tiff = self.tiff.astype(im_type)
+
+        # histogram computation =============================================================================================
+
+        # parameters of histogram computation depend on image dtype.
+        # following https://imagej.nih.gov/ij/developer/macro/functions.html#getStatistics
+        # 'The histogram is returned as a 256 element array. For 8-bit and RGB images, the histogram bin width is one.
+        # for 16-bit and 32-bit images, the bin width is (max-min)/256.'
+        if im_type == np.uint8:
+            hist_min = 0
+            hist_max = 256
+        elif im_type in (np.uint16, np.int32):
+            hist_min = im_min
+            hist_max = im_max
+        else:
+            raise NotImplementedError(f"Not implemented for dtype {im_type}")
+
+        # compute histogram
+        histogram = np.histogram(self.tiff, bins = 256, range = (hist_min, hist_max))[0]
+        bin_size = (hist_max - hist_min)/256
+
+        # compute output min and max bins =================================================================================
+
+        # various algorithm parameters
+        h, w = self.tiff.shape[:2]
+        pixel_count = h * w
+        # the following values are taken directly from the ImageJ file.
+        limit = pixel_count/10
+        const_auto_threshold = 5000
+        auto_threshold = 0
+
+        auto_threshold = const_auto_threshold if auto_threshold <= 10 else auto_threshold/2
+        threshold = int(pixel_count/auto_threshold)
+
+        # setting the output min bin
+        i = -1
+        found = False
+        # going through all bins of the histogram in increasing order until you reach one where the count if more than
+        # pixel_count/auto_threshold
+        while not found and i <= 255:
+            i += 1
+            count = histogram[i]
+            if count > limit:
+                count = 0
+            found = count > threshold
+        hmin = i
+        found = False
+
+        # setting the output max bin : same thing but starting from the highest bin.
+        i = 256
+        while not found and i > 0:
+            i -= 1
+            count = histogram[i]
+            if count > limit:
+                count = 0
+            found = count > threshold
+        hmax = i
+
+        # compute output min and max pixel values from output min and max bins ===============================================
+        if hmax >= hmin:
+            min_ = hist_min + hmin * bin_size
+            max_ = hist_min + hmax * bin_size
+            # bad case number one, just return the min and max of the histogram
+            if min_ == max_:
+                min_ = hist_min
+                max_ = hist_max
+        # bad case number two, same
+        else:
+            min_ = hist_min
+            max_ = hist_max
+
+        # apply the contrast ================================================================================================
+        imr = (self.tiff-min_)/(max_-min_) * 255
+
+        # reassign the tiff image
+        self.tiff = imr
+
 
     @staticmethod
     def make_unit_vector(x) -> list:
@@ -129,8 +241,7 @@ class BrainReg3D():
         ranks = [sorted_depths.index(x) for x in depths]
 
         # ocassionally, the same value will occur twice. In this case, we have
-        # to resolve arbitrary distances.
-
+        # to resolve arbitrary rankings.
         if len(set(ranks)) < len(ranks):
             # find which ranks aren't unique
             for i in range(len(ranks)):
@@ -149,7 +260,7 @@ class BrainReg3D():
         out_path = self.tiff_path.parent / (self.tiff_path.stem + '_masks.tif')
         return str(out_path)
 
-    def run(self):
+    def run(self) -> None:
         """
         Runs the registration pipeline.
         """
@@ -177,7 +288,7 @@ class BrainReg3D():
 
         # raise error if no movement is detected
         if np.all(pre_coords == post_coords):
-            raise(ValueError("No manipulation of the IOS image was detected. Did you hit enter to accept your changes?"))
+            raise(ValueError("No manipulation of the loaded image was detected. Did you hit enter to accept your changes?"))
 
         # transform moved image to starting coordinate system
         moved_image = scene1.actors[-1].copy().apply_transform(mtx).apply_transform(mtx_swap_x_z)
@@ -249,11 +360,11 @@ class BrainReg3D():
             cur_proj = cur_proj.c(actor.color()).alpha(.8)
 
             # trying to cut the projection to the image plane
-            cut_proj = cur_proj.copy().cut_with_box(img_boundaries.bounds())
+            img_proj = cur_proj.copy().cut_with_box(img_boundaries.bounds())
             cut_projections.append(cur_proj)
 
             # adding the cut projection to scene 2
-            scene2.add(cut_proj.copy())
+            scene2.add(img_proj.copy())
 
         # render the scene
         scene2.render(camera=self.cam)
@@ -262,11 +373,11 @@ class BrainReg3D():
         # plotting the projection coordinates
         # include the 3d distance from the scene
         fig = plt.figure()
+        fig.suptitle("Brain volume visible in image")
         ax = fig.add_subplot(projection='3d')
 
         # plotting the cut projections
         for i,proj in enumerate(cut_projections):
-            origin = np.zeros(proj.coordinates.shape[0])
             x = -np.array(proj.coordinates[:,2]).T
             y = np.array(proj.coordinates[:,0]).T
             z = -proj_distances[i]
@@ -281,11 +392,11 @@ class BrainReg3D():
         nrows, ncols = self.tiff.shape
 
         # get the transformation to the current imaging plane
-        # take projection coordinates and perform inverse transform on the pixels?
         inv_trans = img_plane.transform.compute_inverse()
         img_scale = img_plane.transform.get_concatenated_transform(0)
         new_projs = []
         fig = plt.figure()
+        fig.suptitle("Region projections onto image plane")
         for proj in cut_projections:
             new_proj = proj.copy().apply_transform(inv_trans).apply_transform(img_scale)
             x,y,z = new_proj.coordinates.T
@@ -296,12 +407,13 @@ class BrainReg3D():
 
         # quantizing coordinates
         quantized_coords = []
-        plt.figure()
+        fig = plt.figure()
+        fig.suptitle('Quantized projections onto image plane')
 
         # get pixel counter
         counts = dict()
 
-        # 
+        # quantizing coordinate projections onto the image plane
         for i, proj in enumerate(new_projs):
             x,y,_ = proj.coordinates.T
             z = proj_distances[i]
@@ -328,6 +440,7 @@ class BrainReg3D():
             quantized_coords.append([low_x, low_y, z])
             plt.scatter(low_x, low_y)
         plt.show()
+        plt.close()
 
 
         # convert back to coordinates
@@ -342,12 +455,14 @@ class BrainReg3D():
 
         # recover the values
         fig = plt.figure()
+        fig.suptitle("Resolved regional projections onto image plane")
         ax = fig.add_subplot()
         for k,v in recovered.items():
             x,y,z = np.array(v).T
             ax.scatter(x,y,label=k)
         ax.legend()
         plt.show()
+        plt.close()
 
         # converting brain regions to integers
         region_to_int = {self.brain_regions[i] : i for i in range(len(self.brain_regions))}
@@ -365,7 +480,7 @@ class BrainReg3D():
         label_vec_ = np.array(label_vec)
         coord_vecs_ = np.array(coord_vecs)
 
-        # now running k-nearest-neighbors algorithm to determine boundaries
+        # k-nearest-neighbors algorithm to determine boundaries
         clf = Pipeline(
             steps=[("scaler", StandardScaler()), ("knn", KNeighborsClassifier(n_neighbors=11))]
         )
@@ -386,28 +501,32 @@ class BrainReg3D():
 
         # using the estimator to guage boundaries
         clf.set_params(knn__weights="uniform").fit(coord_vecs_, label_vec_)
-        DecisionBoundaryDisplay.from_estimator(
+        disp = DecisionBoundaryDisplay.from_estimator(
             clf,
             pixel_list,
             response_method="predict",
             plot_method="pcolormesh"
         )
+        disp.figure_.suptitle("Pixelwise decision boundary using k-nearest neigbors")
+        #disp.ax_.legend(labels=self.brain_regions)
         plt.show()
 
         # getting pixelwise predictions
         preds = clf.predict(pixel_list)
 
-        # I now need to organize these into masks.
-        # This is preferable to ROIs because the masks need not be continuous, such as if
-        # regions stretched across hemispheres.
+        # generating masks
         n_masks = len(self.brain_regions)
         masks = np.zeros((n_masks, nrows, ncols), dtype=np.int16)
 
         # adjust pixel list
         pixel_adj = pixel_list + np.abs(pixel_list.min(0))
 
-        # identifying mask values
-        fig, axs = plt.subplots(n_masks, 1)
+        # plotting mask outputs
+        srows, scols = self._mask_subplot_size(n_masks)
+        ids = [[a,b] for a in range(srows) for b in range(scols)]
+
+        fig, axs = plt.subplots(srows, scols)
+        fig.suptitle("Pixelwise masks")
         for i in range(n_masks):
 
             # getting array of zeros
@@ -422,10 +541,12 @@ class BrainReg3D():
             masks[i] = mask
 
             # plotting the mask
-            axs[i].imshow(mask, origin='lower')
-            axs[i].set_title(self.brain_regions[i])
+            srow, scol = ids[i]
+            axs[srow,scol].imshow(mask, origin='lower')
+            axs[srow,scol].set_title(self.brain_regions[i])
 
         plt.show()
+        plt.close()
 
         # now writing the masks to a tiff file for use in imageJ
         imwrite(self.tiff_out, 
