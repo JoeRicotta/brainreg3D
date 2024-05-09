@@ -1,6 +1,7 @@
 from collections.abc import Iterable
 import time
 from pathlib import Path
+from pprint import pprint
 import pickle
 
 from brainrender import Scene
@@ -18,30 +19,12 @@ from sklearn.inspection import DecisionBoundaryDisplay
 
 from tifffile import imread, imwrite
 from vedo import Plane, Image
+from vedo.transformations import LinearTransform
+from vedo import file_io
 
 
-##############################
-######## PARAMETERS ##########
-##############################
 
-class _PathHandler(object):
-    
-    @staticmethod
-    def _check_path(path) -> None:
-        """
-        Ensures self.tiff_path is a Path() object.
-        Converts a string to a Path() object if necessary.
-        Raises error if input is neither string nor path.
-        """
-        if isinstance(path, str):
-            return Path(path).resolve()
-        elif isinstance(path, Path):
-            return path.resolve()
-        else:
-            raise(ValueError(f'Variable tiff_path required to be string or pathlib.Path object-- could not recognize {path}'))
-
-
-class BrainReg3D(_PathHandler):
+class BrainReg3D(object):
     """
     Main brain registration object.
     """
@@ -69,6 +52,7 @@ class BrainReg3D(_PathHandler):
                  focal_point: np.ndarray = _DEFAULT_FOCAL_POINT,
                  cam: dict = _DEFAULT_CAM,
                  image_dims_mm: list[int] = _DEFAULT_IMG_DIMS_MM,
+                 verbose: bool = False,
                  _tiff_frame: int = 0,
                  _auto_contrast: bool = _DEFAULT_AUTO_CONTRAST) -> None:
         
@@ -77,7 +61,7 @@ class BrainReg3D(_PathHandler):
         self.focal_point = focal_point
         self.cam = cam
         self.image_dims_mm = image_dims_mm
-        
+        self.verbose = verbose
 
         # initializing parameters
         self.tiff = imread(self.tiff_path, key=_tiff_frame)
@@ -87,9 +71,28 @@ class BrainReg3D(_PathHandler):
         if _auto_contrast:
             self._enhance_tiff_contrast()
 
-        
-        self.registration = None
-        
+        # flag to change for created objects
+        # if an object is loaded from a pickled object,
+        # then this is false and nothing is draggable
+        self._EDITABLE = True
+
+        # flag to indicate image was matched to another
+        self._MATCHED = False
+
+    @staticmethod
+    def _check_path(path) -> None:        
+        """
+        Ensures self.tiff_path is a Path() object.
+        Converts a string to a Path() object if necessary.
+        Raises error if input is neither string nor path.
+        """
+        if isinstance(path, str):
+            return Path(path).resolve()
+        elif isinstance(path, Path):
+            return path.resolve()
+        else:
+            raise(ValueError(f'Variable tiff_path required to be string or pathlib.Path object-- could not recognize {path}'))
+     
     @staticmethod
     def _mask_subplot_size(n) -> tuple:
         if n % 2 == 0:
@@ -222,27 +225,27 @@ class BrainReg3D(_PathHandler):
         self.tiff = imr
 
     @staticmethod
-    def make_unit_vector(x) -> list:
+    def _make_unit_vector(x) -> list:
         x_ = np.array(x)
         norm = np.sqrt(np.sum(x_**2))
         x = x_ / norm
         return x.tolist()
 
     @classmethod
-    def normcross(cls,x,y) -> list:
+    def _normcross(cls,x,y) -> list:
         # return normalized cross product
         z_ = np.cross(x,y)
-        z_norm = cls.make_unit_vector(z_)
+        z_norm = cls._make_unit_vector(z_)
         return z_norm
 
     @staticmethod
-    def myround(x: Iterable, base=5) -> Iterable:
+    def _myround(x: Iterable, base=5) -> Iterable:
         # custom rounding function:
         # https://stackoverflow.com/questions/2272149/round-to-5-or-other-number-in-python
         return base * np.round(x/base)
 
     @staticmethod
-    def sort_lists(val) -> list:
+    def _sort_lists(val) -> list:
         # sorts the z-distances from smallest to highest.
         # resolves duplicate distances based on list position.
 
@@ -265,13 +268,79 @@ class BrainReg3D(_PathHandler):
         return [val[ranks.index(i)] for i in range(len(ranks))]
 
     @property
-    def tiff_out(self) -> str:
+    def mask_path(self) -> str:
         out_path = self.tiff_path.parent / (self.tiff_path.stem + '_masks.tif')
         return str(out_path)
+    
+    @property
+    def pickle_path(self) -> str:
+        out_path = self.tiff_path.parent / (self.tiff_path.stem + '_obj.pickle')
+        return str(out_path)
+    
+    @property
+    def img_transform_path(self) -> str:
+        out_path = self.tiff_path.parent / (self.tiff_path.stem + '_transform.mat')
+        return str(out_path)
+    
+    def match_to(self, reg_path) -> None:
+        """
+        Specify pickled object to which to match the registration
+        """
+        self.match_path = reg_path
+        self._MATCHED = True
+
+        # test function
+        _ = self.match_actor
+
+        return self
+
+    @property
+    def match_actor(self):
+        """
+        Produces the matching image template to which to match the current
+        active image to. Useful for matching image locations across repeated
+        measurements.
+        """
+
+        if not self._MATCHED:
+            return None
+        
+        match_path = self._check_path(self.match_path)
+        if not match_path.exists():
+            print(f"Registration file not identified-- {str(match_path)} not a valid path to an object")
+
+        # load saved object
+        reg = load_registration(str(match_path))
+        matrices = reg.transforms
+
+        # get image matching
+        img3D_match = Image(reg.tiff).tomesh().clone().cmap("gray").alpha(.7)
+
+        # looping through all transformations except for the first: this
+        # is already present in img3D_match when the tomesh() method is called
+        for m in matrices[1:]:
+            img3D_match = img3D_match.apply_transform(m)
+
+        # add negligible shift in z to put template and image on different planes
+        img3D_match = img3D_match.shift([0, -10, 0])
+
+        # reversing the automatic coordinate transformation which is used during
+        # brainrender's scene.render method. This line causes the final two transformations
+        # to cancel out into identities, as transformation matrices without translations are their
+        # own inverses.
+        img3D_match = img3D_match.apply_transform(mtx).apply_transform(np.array(mtx_swap_x_z).T)
+
+        # make unmovable
+        img3D_match.draggable(False)
+        img3D_match.pickable(False)
+
+        return img3D_match
+
 
     def run(self) -> None:
         """
         Runs the registration pipeline.
+        match: location of a prior registration to match to. 
         """
 
         # make the scene and the regional actors
@@ -279,7 +348,7 @@ class BrainReg3D(_PathHandler):
 
         # converting the image to mesh
         img = Image(self.tiff)
-        img3D = img.tomesh().clone().cmap("gray").alpha(0.85)
+        img3D = img.tomesh().clone().cmap("gray").alpha(0.7)
 
         # identifying scale factor from img3D
         if self.image_dims_mm:
@@ -292,6 +361,10 @@ class BrainReg3D(_PathHandler):
         img3D = img3D.scale(scale_factor).rotate_x(-90).rotate_y(90).pos(self._DEFAULT_BREGMA + np.array([0,-400,0]))
         img3D = img3D.draggable(True)
 
+        # add matched template if it exists
+        if self._MATCHED:
+            scene1.add(self.match_actor)
+
         # adding the image                     
         scene1.add(img3D)
         scene1.plotter += "Press 'a' to manipulate image.\nshift: translate\nctrl: rotate \nright click: scale"
@@ -299,10 +372,11 @@ class BrainReg3D(_PathHandler):
 
         # render the scene and interact
         scene1.render(camera=self.cam)
-        scene1.close()
-
-        # ensure that the position of IOS image has changed
+    
+        # ensure that the position of the image has changed
         post_actor = scene1.actors[-1].copy()
+
+        # getting transforms
         post_coords = scene1.actors[-1].coordinates
 
         # raise error if no movement is detected
@@ -340,7 +414,7 @@ class BrainReg3D(_PathHandler):
         normals = [np.array(x) - np.array(y) for x,y in zip(origins,origins2)] #directed along frame axes
 
         # computing perspectival normals
-        persp_norms = [self.normcross(x,-y) for x,y in zip(persp_vecs, normals)]
+        persp_norms = [self._normcross(x,-y) for x,y in zip(persp_vecs, normals)]
 
         # plotting the planes
         planes = [Plane(x,y,s=(1000,1000)) for x,y in zip(midpoints, persp_norms)]
@@ -386,24 +460,26 @@ class BrainReg3D(_PathHandler):
             # adding the cut projection to scene 2
             scene2.add(img_proj.copy())
 
-        # render the scene
-        scene2.render(camera=self.cam)
+        if self.verbose:
+            scene2.render(camera=self.cam)
+
         scene2.close()
 
         # plotting the projection coordinates
         # include the 3d distance from the scene
-        fig = plt.figure()
-        fig.suptitle("Brain volume visible in image")
-        ax = fig.add_subplot(projection='3d')
+        if self.verbose:
+            fig = plt.figure()
+            fig.suptitle("Brain volume visible in image")
+            ax = fig.add_subplot(projection='3d')
 
-        # plotting the cut projections
-        for i,proj in enumerate(cut_projections):
-            x = -np.array(proj.coordinates[:,2]).T
-            y = np.array(proj.coordinates[:,0]).T
-            z = -proj_distances[i]
-            ax.scatter(x, y, z)
-        plt.show()
-        plt.close()
+            # plotting the cut projections
+            for i,proj in enumerate(cut_projections):
+                x = -np.array(proj.coordinates[:,2]).T
+                y = np.array(proj.coordinates[:,0]).T
+                z = -proj_distances[i]
+                ax.scatter(x, y, z)
+            plt.show()
+            plt.close()
 
 
         ############################################
@@ -422,7 +498,9 @@ class BrainReg3D(_PathHandler):
             x,y,z = new_proj.coordinates.T
             plt.scatter(x,-y)
             new_projs.append(new_proj)
-        plt.show()
+
+        if self.verbose:
+            plt.show()
         plt.close()
 
         # quantizing coordinates
@@ -442,8 +520,8 @@ class BrainReg3D(_PathHandler):
             new_y = np.array(y, dtype=np.int64)
 
             # get quantized coordinates
-            low_x = self.myround(new_x, base=10)
-            low_y = self.myround(new_y, base=10)
+            low_x = self._myround(new_x, base=10)
+            low_y = self._myround(new_y, base=10)
 
             # with quantized coordinates
             for j, xyvals in enumerate(zip(low_x, low_y)):
@@ -459,11 +537,13 @@ class BrainReg3D(_PathHandler):
 
             quantized_coords.append([low_x, low_y, z])
             plt.scatter(low_x, low_y)
-        plt.show()
+        
+        if self.verbose:
+            plt.show()
         plt.close()
 
         # convert back to coordinates
-        ordered_counts = {k : self.sort_lists(v) for k,v in counts.items()}
+        ordered_counts = {k : self._sort_lists(v) for k,v in counts.items()}
         recovered = dict()
         for k, v in ordered_counts.items():
             nearest = v[0]
@@ -473,15 +553,16 @@ class BrainReg3D(_PathHandler):
             recovered[region].append(nearest[1:])
 
         # recover the values
-        fig = plt.figure()
-        fig.suptitle("Resolved regional projections onto image plane")
-        ax = fig.add_subplot()
-        for k,v in recovered.items():
-            x,y,z = np.array(v).T
-            ax.scatter(x,y,label=k)
-        ax.legend()
-        plt.show()
-        plt.close()
+        if self.verbose:
+            fig = plt.figure()
+            fig.suptitle("Resolved regional projections onto image plane")
+            ax = fig.add_subplot()
+            for k,v in recovered.items():
+                x,y,z = np.array(v).T
+                ax.scatter(x,y,label=k)
+            ax.legend()
+            plt.show()
+            plt.close()
 
         # converting brain regions to integers
         region_to_int = {self.brain_regions[i] : i for i in range(len(self.brain_regions))}
@@ -527,7 +608,6 @@ class BrainReg3D(_PathHandler):
             plot_method="pcolormesh"
         )
         disp.figure_.suptitle("Pixelwise decision boundary using k-nearest neigbors")
-        #disp.ax_.legend(labels=self.brain_regions)
         plt.show()
 
         # getting pixelwise predictions
@@ -567,49 +647,60 @@ class BrainReg3D(_PathHandler):
         plt.show()
         plt.close()
 
-        # now writing the masks to a tiff file for use in imageJ
-        imwrite(self.tiff_out, 
-                masks, 
-                photometric='minisblack',
-                imagej=True,
-                metadata={'axes' : 'ZYX', 
-                        'Labels' : self.brain_regions})
+
+        if self._EDITABLE:
+            # if the image is editable, write all of the results to file
+
+            # now writing the masks to a tiff file for use in imageJ
+            imwrite(self.mask_path, 
+                    masks, 
+                    photometric='minisblack',
+                    imagej=True,
+                    metadata={'axes' : 'ZYX', 
+                            'Labels' : self.brain_regions})
+            
+            print(f"Wrote {self.mask_path}")
+
+            # if image wasn't editable, don't save any of the results 
+            # assigning variable to object prior to write
+            self.registered_date = time.ctime()
+            self.quantized_coords = quantized_coords
+            self.recovered = recovered
+            self.masks = masks
+            self.clf = clf
+            self.pixel_list = pixel_list
+            ntransforms = scene1.actors[-1]._mesh.transform.ntransforms
+            self.transforms = [scene1.actors[-1]._mesh.transform.get_concatenated_transform(i).matrix for i in range(ntransforms)]
+
+            # writing results to pickled object
+            stream = open(self.pickle_path, 'wb')
+            pickle.dump(self, stream, pickle.HIGHEST_PROTOCOL)
+
+            # saving transformation matrix
+            print(f"Wrote {self.pickle_path}")
         
-        print(f"Wrote {self.tiff_out}")
-
-        # this image has now been registered
-        self._REGISTERED_DATE = time.ctime()
-        return (RegistrationResult(self)) #TODO: return a registration result and unpack the data so it can be used across platforms.
+        return self
 
 
-    class RegistrationResult(_PathHandler):
-        """
-        Class to handle storage of results. Saves the objects in a readable format.
-        """
+def load_registration(pickle_path):
 
-        def __init__(self, 
-                    file_path: Path = Path(),
-                    ext_out: str = '.json',
-                    reg_object: None=None) -> None:
-            
-            self.file_path = self._check_path(file_path)
-            self.ext_out = ext_out
-            self.reg_object = reg_object
-            self._exists = self.file_path.exists()
-            self._is_file = self.file_path.is_file()
+    # finding pickle_path
+    stream = open(pickle_path, 'rb')
 
-        def write_result(self, file_path=None):
-            # Write current directory, tiff directory, 
-            # default values (i.e. reg_object.__dict__), 
-            # tiff values (i.e. tiff.__dict__)
-            pass
+    # loading object as non-editable
+    obj = pickle.load(stream)
+    obj._EDITABLE = False
 
-        def read_result(self, file_path=None):
-            pass
-            
+    return obj
+
         
 
 if __name__ == "__main__":
     reg = BrainReg3D('./resources/sample_image.tif', image_dims_mm=[6.25,4])
-    breakpoint()
     reg.run()
+    obj_path = reg.pickle_path
+
+    # trying to match to template
+    reg2 = BrainReg3D('./resources/sample_image.tif', image_dims_mm=[6.25,4])
+    reg2 = reg2.match_to(obj_path) # template matching to previous registration results
+    reg2.run()
