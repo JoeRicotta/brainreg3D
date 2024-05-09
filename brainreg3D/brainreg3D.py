@@ -693,6 +693,7 @@ def load_registration_result(pickle_path) -> Type[BrainReg3D]:
         
 
 if __name__ == "__main__":
+
     reg = BrainReg3D('./resources/sample_image.tif', image_dims_mm=[6.25,4])
     reg.run()
     obj_path = reg.pickle_path
