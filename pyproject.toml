@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=64", "setuptools_scm>=8"]
+requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "brainreg3D"
-version = "2024.06.3"
+version = "2024.06.4"
 authors = [
   { name="Joe Ricotta", email="ricotta@psu.edu" },
 ]
@@ -25,14 +25,9 @@ dependencies = [
     "vedo==2024.5.1"
 ]
 
-[tool.setuptools_scm]
-
 [project.urls]
 Homepage = "https://github.com/JoeRicotta/brainreg3D"
 Issues = "https://github.com/JoeRicotta/brainreg3D/issues"
 
 [tool.setuptools.packages.find]
 include = ["brainreg3D"]
-
-[tool.setuptools.package-data]
-brainreg3D = ["resources/*"]
