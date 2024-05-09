@@ -1,8 +1,9 @@
 from collections.abc import Iterable
 import time
+from typing import Type, Self
 from pathlib import Path
-from pprint import pprint
 import pickle
+from warnings import warn
 
 from brainrender import Scene
 from brainrender.actors import Point
@@ -18,9 +19,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.inspection import DecisionBoundaryDisplay
 
 from tifffile import imread, imwrite
-from vedo import Plane, Image
-from vedo.transformations import LinearTransform
-from vedo import file_io
+from vedo import Plane, Image, Mesh
 
 
 
@@ -162,8 +161,8 @@ class BrainReg3D(object):
             hist_min = im_min
             hist_max = im_max
         else:
-            raise NotImplementedError(f"Not implemented for dtype {im_type}")
-
+            raise NotImplementedError(f"Not implemented for dtype {im_type}")            
+        
         # compute histogram
         histogram = np.histogram(self.tiff, bins = 256, range = (hist_min, hist_max))[0]
         bin_size = (hist_max - hist_min)/256
@@ -271,15 +270,10 @@ class BrainReg3D(object):
     def mask_path(self) -> str:
         out_path = self.tiff_path.parent / (self.tiff_path.stem + '_masks.tif')
         return str(out_path)
-    
+
     @property
     def pickle_path(self) -> str:
-        out_path = self.tiff_path.parent / (self.tiff_path.stem + '_obj.pickle')
-        return str(out_path)
-    
-    @property
-    def img_transform_path(self) -> str:
-        out_path = self.tiff_path.parent / (self.tiff_path.stem + '_transform.mat')
+        out_path = self.tiff_path.parent / (self.tiff_path.stem + '_registration_results.pickle')
         return str(out_path)
     
     def match_to(self, reg_path) -> None:
@@ -295,7 +289,7 @@ class BrainReg3D(object):
         return self
 
     @property
-    def match_actor(self):
+    def match_actor(self) -> Type[Mesh]:
         """
         Produces the matching image template to which to match the current
         active image to. Useful for matching image locations across repeated
@@ -310,7 +304,7 @@ class BrainReg3D(object):
             print(f"Registration file not identified-- {str(match_path)} not a valid path to an object")
 
         # load saved object
-        reg = load_registration(str(match_path))
+        reg = load_registration_result(str(match_path))
         matrices = reg.transforms
 
         # get image matching
@@ -337,7 +331,7 @@ class BrainReg3D(object):
         return img3D_match
 
 
-    def run(self) -> None:
+    def run(self) -> Self:
         """
         Runs the registration pipeline.
         match: location of a prior registration to match to. 
@@ -348,7 +342,7 @@ class BrainReg3D(object):
 
         # converting the image to mesh
         img = Image(self.tiff)
-        img3D = img.tomesh().clone().cmap("gray").alpha(0.7)
+        img3D = img.tomesh().clone().cmap("gray").alpha(0.85)
 
         # identifying scale factor from img3D
         if self.image_dims_mm:
@@ -682,7 +676,10 @@ class BrainReg3D(object):
         return self
 
 
-def load_registration(pickle_path):
+def load_registration_result(pickle_path) -> Type[BrainReg3D]:
+    """
+    Loads a former registration result
+    """
 
     # finding pickle_path
     stream = open(pickle_path, 'rb')
