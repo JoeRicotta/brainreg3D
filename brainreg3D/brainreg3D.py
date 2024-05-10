@@ -3,7 +3,6 @@ import time
 from typing import Type, Self
 from pathlib import Path
 import pickle
-from warnings import warn
 
 from brainrender import Scene
 from brainrender.actors import Point
@@ -695,6 +694,7 @@ def load_registration_result(pickle_path) -> Type[BrainReg3D]:
 if __name__ == "__main__":
 
     reg = BrainReg3D('./resources/sample_image.tif', image_dims_mm=[6.25,4])
+    reg.verbose = True
     reg.run()
     obj_path = reg.pickle_path
 
