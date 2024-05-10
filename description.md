@@ -2,7 +2,7 @@
 brainreg3D is based off of the vedo and brainrender framework to allow registration of a 2D image onto a 3D brain. It uses perspectival projections of the brain onto the field of view to map cortical regions to image pixels.
 
 The following images were obtained with the below code:
-```
+```python
 from brainreg3D import BrainReg3D
 
 # by specifying the image_dims_mm parameter, we ensure the loaded image
