@@ -1,10 +1,27 @@
 # brainreg3D
-A pipeline for manual registration of cortical regions using 3D projection onto an experimentally obtained 2D image. 
+A pipeline for manual registration of cortical regions using 3D projection onto an experimentally obtained 2D image.
 
-## Installation
-Installation can be done in one of three ways: install using pip, or through repo cloning and manual install. The latter is recommended for the example scripts and data to be included in the install.
+Register a widefield image using the command line:
+```
+$ python -m brainreg3D ./your_image.tif
+```
 
-1. Clone repository (Windows)
+Write custom python scripts to register images:
+```
+#!/usr/bin/python3
+from brainreg3D import BrainReg3D
+reg = BrainReg3D('./your_image.tif')
+reg.run()
+```
+
+description.md contains a more thorough overview of the workflow.
+
+# Installation
+Installation can be done in one of two ways: install using pip, or through repo cloning and manual installation. The latter is recommended for the example scripts and data to be included in the install.
+
+## Clone repository
+
+### Windows
 ```
 python -m venv .venv
 ./.venv/Scripts/Activate.ps1
@@ -17,7 +34,7 @@ python example.py
 
 ```
 
-1. Clone repository (Mac)
+### Mac
 ```
 python3 -m venv .venv
 source .venv/bin/activate
@@ -30,8 +47,11 @@ pip install -r requirements.txt
 python example.py
 ```
 
-2. Install from pip
+## Install with pip
+(pypi repo is in alpha, no guarantees on successful install.)
 ```
 python -m pip install -i https://test.pypi.org/simple/ brainreg3D
 ```
 
+# Acknowledgements
+brainreg3D relies heavily upon the [vedo](https://vedo.embl.es/) and [brainrender](https://github.com/brainglobe/brainrender) frameworks. Thank you to these teams for making this pipeline possible.
