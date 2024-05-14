@@ -644,6 +644,10 @@ class BrainReg3D(object):
         if self._EDITABLE:
             # if the image is editable, write all of the results to file
 
+            # adjust the masks for imageJ write
+            for i in range(masks.shape[0]):
+                masks[i] = np.flip(masks[i], axis=0)
+
             # now writing the masks to a tiff file for use in imageJ
             imwrite(self.mask_path, 
                     masks, 

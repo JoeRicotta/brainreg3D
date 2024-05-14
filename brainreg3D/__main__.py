@@ -13,7 +13,7 @@ parser = argparse.ArgumentParser(
 )
 
 # parsing input arguments
-parser.add_argument('-tiff_path', type=Path, help='The tiff file to be registered.'))
+parser.add_argument('-tiff_path', type=Path, help='The tiff file to be registered.')
 
 # results
 results = parser.parse_args()
